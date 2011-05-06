@@ -4,7 +4,66 @@ import org.scalatest.matchers._
 import org.hinz.gis._      
 
 class EstimatorSpec extends Spec with ShouldMatchers {
-  
+  describe("Estimator") {
+
+    // Define combiner function is a simple average
+    val cmb = (x:List[Interval]) => x.map(_.time).reduceLeft(_+_)/x.length.toDouble
+
+
+    it ("should be able to interpolate missing segments") {
+      val i1 = Interval(5,10,5,null)
+      val i2 = Interval(10,20,10,null)
+      val i3 = Interval(30,50,20,null)
+      val i4 = Interval(60,70,10,null)
+
+      new Estimator(null).interpolate(0.0,100.0, List(i1,i2,i3,i4)) should equal(List(
+        Interval(0,5,5,null),
+        Interval(5,10,5,null),
+        Interval(10,20,10,null),
+        Interval(20,30,10,null),
+        Interval(30,50,20,null),
+        Interval(50,60,10,null),
+        Interval(60,70,10,null),
+        Interval(70,100,30,null)))
+    }
+
+    it("should be able to estimate sub-segments with a single baseline") {
+      val l = List(Interval(0,100,100,null))
+
+      val e = new Estimator(cmb)
+
+      e.estimate(20,30,l) should equal(10) // Inside
+      e.estimate(90,110,l) should equal(20) // Overlap right
+      e.estimate(-10,10,l) should equal(20) // Overlap left
+    }
+
+    it("should be able to esimate a compoud case") {
+      val l = List(Interval(-200,-100,1000,null), // Ignore to left
+                   Interval(-20,120,140,null), // Extends past left and right
+                   Interval(20,30,30,null), // Normal interval in middle
+                   Interval(80,130,10,null), // Extends right
+                   Interval(120,200,3000,null)) // Ignore to right
+
+      val e = new Estimator(cmb)
+
+      e.estimate(40,50,l) should equal(10)
+      e.estimate(0,100,l) should equal(102)
+
+    }
+
+    it("should be able to esimate a simple compound case") {
+      val l = List(Interval(0,100,100,null),
+                   Interval(20,30,30,null))
+
+      val e = new Estimator(cmb)
+
+      e.estimate(0,100,l) should equal(110)
+      e.estimate(-10,10,l) should equal(20)
+      e.estimate(90,110,l) should equal(20)
+      e.estimate(-10,110,l) should equal(130)
+    }
+      
+  }
 }
 
 class IntervalSpec extends Spec with ShouldMatchers {

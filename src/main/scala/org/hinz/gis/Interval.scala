@@ -94,6 +94,8 @@ case class Interval(start:Double, end:Double, time: Double, recordedAt: Date) {
  */
 class Estimator(val combiner:(List[Interval] => Double)) {
   
+  var log = false
+
   private def doCombine(l:List[Interval]):Interval = l match {
     case Nil => throw new Exception("Cannot combine empty list")
     case x::xs => Interval(x.start, x.end, combiner(l), null)
@@ -110,33 +112,29 @@ class Estimator(val combiner:(List[Interval] => Double)) {
    */
   def interpolate(p1:Double, p2:Double, lst:List[Interval]):List[Interval] = {
     def interpolateh(lst:List[Interval], acc:List[Interval] = Nil):List[Interval] = lst match {
-      case x::xs::xss => 
+      case x::xs::xss => {
         if (U.dblCompare(x.end,xs.start))
           interpolateh(xs :: xss, x :: acc)
         else
-          interpolateh(xs :: xss, Interval.interpolate(x,xs) :: x :: acc)
+          interpolateh(Interval.interpolate(x,xs) :: xs :: xss, x :: acc)
+      }
       case Nil => acc.reverse
       case x::xs => 
         if (x.end < p2) interpolateh(xs, Interval.interpolate(x, p2) :: x :: acc)
         else interpolateh(xs, x :: acc)
-      List()
     }
     
     if (lst.length == 0) throw new Exception("Can't interpolate if NO datapoints are available")
-    val finalList = 
-      if(lst.head.start > p1) interpolate(p1,p2,Interval.interpolate(p1,lst.head) :: lst)
-      else interpolateh(lst.sortWith(_.start < _.start))
-    
-    if (finalList.last.end < p2)
-      finalList ++ List(Interval.interpolate(finalList.last, p2))
-    else
-      finalList
+
+    if(lst.head.start > p1) interpolate(p1,p2,Interval.interpolate(p1,lst.head) :: lst)
+    else interpolateh(lst.sortWith(_.start < _.start))
   }
 
   def estimate(startDist:Double, endDist:Double, intervals:List[Interval]):Double = {
     // Get rid of parts that start before/end after the useful area
     val editedIntervals = Interval.matchEnds(endDist,
-                                             Interval.matchStarts(startDist, intervals))
+                                             Interval.matchStarts(startDist, intervals)).filter(x =>
+                                               x.end >= startDist && x.start <= endDist)
 
     // Partition and group
     var groups:List[List[Interval]] = Interval.group(Interval.partition(editedIntervals))
@@ -145,7 +143,17 @@ class Estimator(val combiner:(List[Interval] => Double)) {
     var estimated:List[Interval] = groups.map(doCombine(_))
 
     // Interpolate
-    2.0
+    var interpolated:List[Interval] = interpolate(startDist, endDist, estimated)
+
+    if (log) {
+      println("Intervals: " + editedIntervals)
+      println("Groups: " + groups)
+      println("Est: " + estimated)
+      println("Intr: " + interpolated)
+    }
+
+    // Sum up intervals
+    interpolated.foldLeft(0.0)(_ + _.time)
   }
 }
 
@@ -216,7 +224,7 @@ object Interval {
    */
   def matchStarts(startingPt: Double, intervals:List[Interval]):List[Interval] =
     intervals.map(interval =>
-      if (interval.start < startingPt) 
+      if (interval.start < startingPt && startingPt < interval.end)
         interval.split(startingPt)._2
       else
         interval)
@@ -230,7 +238,7 @@ object Interval {
    */
   def matchEnds(endingPt: Double, intervals:List[Interval]):List[Interval] =
     intervals.map(interval =>
-      if (interval.end > endingPt)
+      if (interval.end > endingPt && endingPt > interval.start)
         interval.split(endingPt)._1
       else
         interval)
