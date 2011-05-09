@@ -1,8 +1,10 @@
 package org.hinz.gis
 import java.util.Date
 
+import scala.annotation.tailrec
+
 object U {
-  def dblCompare(d1:Double,d2:Double,tol:Double = .0000001) =
+  def dblCompare(d1:Double,d2:Double,tol:Double = .0000000001) =
     math.abs(d1 - d2) < tol
 }
 
@@ -13,6 +15,8 @@ object U {
  * Intervals also contain the date they were recorded
  */
 case class Interval(start:Double, end:Double, time: Double, recordedAt: Date) {
+
+  def velocity = (end - start)/time
 
   def samePoints(i: Interval) = 
     U.dblCompare(i.start,start) && U.dblCompare(i.end,end)
@@ -113,10 +117,12 @@ class Estimator(val combiner:(List[Interval] => Double)) {
   def interpolate(p1:Double, p2:Double, lst:List[Interval]):List[Interval] = {
     def interpolateh(lst:List[Interval], acc:List[Interval] = Nil):List[Interval] = lst match {
       case x::xs::xss => {
-        if (U.dblCompare(x.end,xs.start))
+        if (U.dblCompare(x.end,xs.start)) 
           interpolateh(xs :: xss, x :: acc)
-        else
+        else {
+          println("Had to interp between " + x + " and " + xs)
           interpolateh(Interval.interpolate(x,xs) :: xs :: xss, x :: acc)
+        }
       }
       case Nil => acc.reverse
       case x::xs => 
@@ -130,7 +136,37 @@ class Estimator(val combiner:(List[Interval] => Double)) {
     else interpolateh(lst.sortWith(_.start < _.start))
   }
 
-  def estimate(startDist:Double, endDist:Double, intervals:List[Interval]):Double = {
+  var segSize = 0.1 // 100 meters
+ 
+  @tailrec
+  final def estimate(startDist:Double, endDist:Double, intervals:List[Interval], est:Double = 0):Double = {
+    if (startDist >= endDist) est
+    else {
+      val thisInterval = Interval(startDist,startDist+segSize,0,null)
+      printlg("About to process " + thisInterval + "... ")
+
+      val inRange = intervals.filter(x => x.start <= thisInterval.end && x.end >= thisInterval.start)
+
+      printlg(" #I: " + inRange.length)
+
+      // Compute an average speed:
+      // Only use the 4 most recent samples...
+      val takeSize = 4
+      val dataPoints = inRange.map(_.velocity).take(takeSize)
+      val spd = dataPoints.reduceLeft(_ + _) / dataPoints.size
+      val combd = segSize / spd
+
+      printlg(" Avg V: " + spd)
+      printlnlg(" Est: " + combd)
+      estimate(thisInterval.end, endDist, intervals, est + combd)
+    }
+  }
+  
+  def printlg(x:String) = if (log) print(x)
+  def printlnlg(x:String) = if (log) println(x)
+    
+
+  def estimateOld(startDist:Double, endDist:Double, intervals:List[Interval]):Double = {
     // Get rid of parts that start before/end after the useful area
     val editedIntervals = Interval.matchEnds(endDist,
                                              Interval.matchStarts(startDist, intervals)).filter(x =>
@@ -140,15 +176,22 @@ class Estimator(val combiner:(List[Interval] => Double)) {
     var groups:List[List[Interval]] = Interval.group(Interval.partition(editedIntervals))
 
     // Apply estimator
-    var estimated:List[Interval] = groups.map(doCombine(_))
-
-    // Interpolate
-    var interpolated:List[Interval] = interpolate(startDist, endDist, estimated)
+    var estimated:List[Interval] = groups.map(doCombine(_)).filter(_.time > 0.0).filter(x => x.start != x.end)
 
     if (log) {
-      println("Intervals: " + editedIntervals)
       println("Groups: " + groups)
       println("Est: " + estimated)
+      println("Intervals: " + editedIntervals)
+    }
+
+    // Interpolate
+    // Sort before we interpolate
+    val sorted:List[Interval] = estimated.sortWith(_.start < _.start)
+
+    println(sorted.take(4))
+    var interpolated:List[Interval] = interpolate(startDist, endDist, sorted)
+
+    if (log) {
       println("Intr: " + interpolated)
     }
 
@@ -183,10 +226,18 @@ object Interval {
   }
 
   def interpolate(i1:Interval, d:Double):Interval = 
-    Interval(i1.end, d, i1.time / (i1.end - i1.start) * (d - i1.end), i1.recordedAt)
+    if (d > i1.end)
+      Interval(i1.end, d, i1.time / (i1.end - i1.start) * (d - i1.end), i1.recordedAt)
+    else
+      i1
 
   def interpolate(d:Double, i1:Interval):Interval =
-    Interval(d, i1.start, i1.time / (i1.end - i1.start) * (i1.start - d), i1.recordedAt)
+    if (d < i1.start)
+      Interval(d, i1.start, i1.time / (i1.end - i1.start) * (i1.start - d), i1.recordedAt)
+    else
+      i1
+  
+  
   
   /**
    * Given a bunch of intervals, partition each interval so that
@@ -195,7 +246,7 @@ object Interval {
    */
   def partition(intervals:List[Interval]):List[Interval] = {
     // Create a list of all split points:
-    val points:List[Double] = intervals.flatMap(i => List(i.start,i.end))
+    val points:List[Double] = intervals.flatMap(i => List(i.start,i.end)).distinct
 
     intervals.flatMap(i => i.split(points.filter(i.contains(_,false))))
   }
